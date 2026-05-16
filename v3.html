@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>On-Call Agent v3</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3b82f6;
+      --ai-border: #6366f1;
+      --ai-glow: rgba(99, 102, 241, 0.25);
+      --fallback-border: #ea580c;
+      --fallback-bg: #422006;
+      --err-bg: #451a1a;
+      --err-border: #ef4444;
+      --code-bg: #0b1220;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #243044;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    #quota-bar {
+      display: none;
+      padding: 8px 16px;
+      background: var(--err-bg);
+      border-bottom: 2px solid var(--err-border);
+      color: #fecaca;
+      font-size: 13px;
+    }
+    #quota-bar.show { display: block; }
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      max-width: 880px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .msg { margin-bottom: 18px; }
+    .msg.user .bubble {
+      margin-left: auto;
+      background: #243044;
+      border-radius: 12px 12px 2px 12px;
+      max-width: 85%;
+      border: 1px solid #334155;
+    }
+    .msg.assistant .bubble {
+      margin-right: auto;
+      max-width: 92%;
+      border-radius: 12px;
+      padding: 0;
+      overflow: hidden;
+    }
+    .bubble-inner { padding: 12px 14px; font-size: 14px; line-height: 1.55; }
+    /* AI 模式：紫/深蓝智能感 */
+    .bubble-ai {
+      background: linear-gradient(145deg, #1a1f35 0%, #151a2e 100%);
+      border: 2px solid var(--ai-border);
+      box-shadow: 0 0 20px var(--ai-glow);
+    }
+    /* Fallback：黄/橙醒目 */
+    .bubble-fallback {
+      background: linear-gradient(145deg, #2a1f12 0%, #1f160d 100%);
+      border: 2px solid var(--fallback-border);
+      box-shadow: 0 0 16px rgba(234, 88, 12, 0.2);
+    }
+    .role-tag {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 6px 10px;
+      margin: 0;
+      width: 100%;
+    }
+    .role-tag.gemini {
+      background: rgba(99, 102, 241, 0.35);
+      color: #c7d2fe;
+      border-bottom: 1px solid rgba(99, 102, 241, 0.5);
+    }
+    .role-tag.offline {
+      background: rgba(234, 88, 12, 0.35);
+      color: #ffedd5;
+      border-bottom: 1px solid rgba(234, 88, 12, 0.55);
+    }
+    .step-box {
+      font-size: 12px;
+      color: var(--muted);
+      background: #111827;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 6px 10px;
+      margin-bottom: 8px;
+      font-family: ui-monospace, monospace;
+    }
+    .md { word-break: break-word; }
+    .md :is(h1,h2,h3,h4) { margin: 0.5em 0 0.3em; font-size: 1.05em; }
+    .md p { margin: 0.35em 0; }
+    .md ul, .md ol { margin: 0.35em 0 0.35em 1.1em; }
+    .md pre {
+      position: relative;
+      background: var(--code-bg);
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 10px 12px 36px 12px;
+      overflow-x: auto;
+      margin: 0.5em 0;
+    }
+    .md pre code {
+      background: transparent !important;
+      padding: 0 !important;
+      font-size: 13px;
+      color: #e2e8f0;
+      display: block;
+      white-space: pre;
+    }
+    .md :not(pre) > code {
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #93c5fd;
+    }
+    .code-toolbar {
+      position: absolute;
+      right: 8px;
+      bottom: 6px;
+      display: flex;
+      gap: 6px;
+    }
+    .btn-copy {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid #475569;
+      background: #1e293b;
+      color: #cbd5e1;
+      cursor: pointer;
+    }
+    .btn-copy:hover { background: #334155; color: #fff; }
+    .btn-copy.copied { border-color: #22c55e; color: #86efac; }
+    .cmd-copy-row {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    /* 加载：推理进度条区域 */
+    .loading-msg .loading-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: #111827;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      max-width: 92%;
+    }
+    .loading-msg .pulse {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #6366f1;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+    #loading-status {
+      font-size: 13px;
+      color: #a5b4fc;
+      font-family: ui-monospace, "SF Mono", monospace;
+    }
+    .source-line {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed #334155;
+    }
+    footer {
+      border-top: 1px solid #243044;
+      padding: 12px 16px;
+      background: #0b1017;
+    }
+    .composer {
+      max-width: 880px;
+      margin: 0 auto;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    textarea {
+      flex: 1;
+      min-height: 44px;
+      max-height: 160px;
+      resize: vertical;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: #111827;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+    textarea:disabled { opacity: 0.55; }
+    button#send {
+      min-width: 120px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button#send:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+  </style>
+</head>
+<body>
+  <header>On-Call Assistant · v3（Gemini 2.5 Flash / 离线 Fallback）</header>
+  <div id="quota-bar" role="status"></div>
+  <div id="chat"></div>
+  <footer>
+    <div class="composer">
+      <textarea id="q" rows="2" placeholder="描述故障现象或提问…"></textarea>
+      <button type="button" id="send">发送</button>
+    </div>
+  </footer>
+  <script>
+    (function () {
+      const chat = document.getElementById("chat");
+      const qEl = document.getElementById("q");
+      const sendBtn = document.getElementById("send");
+      const quotaBar = document.getElementById("quota-bar");
+      /** @type {{role:'user'|'assistant', content:string}[]} */
+      const history = [];
+
+      const LOADING_STATUSES = [
+        "[Status] 正在分析故障特征…",
+        "[Status] 正在检索 sop-001.html 知识库…",
+        "[Status] 正在调用 Gemini 2.5 Flash 压缩语义…",
+      ];
+
+      function showQuotaBanner() {
+        quotaBar.textContent = "API 配额已耗尽，正在尝试切换到本地规则模式…";
+        quotaBar.classList.add("show");
+        setTimeout(function () { quotaBar.classList.remove("show"); }, 8000);
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function linkifySopFiles(text) {
+        return escapeHtml(text).replace(
+          /sop-\d{3}\.html/gi,
+          function (m) {
+            var name = m.toLowerCase();
+            return '<a href="/data-files/' + name + '" target="_blank" rel="noopener">' + name + "</a>";
+          }
+        );
+      }
+
+      function isFallbackMode(data) {
+        if (!data) return true;
+        if (data.mode === "fallback") return true;
+        var a = data.answer || "";
+        if (a.indexOf("改用本地摘要") !== -1 || a.indexOf("本地摘要") !== -1) return true;
+        return false;
+      }
+
+      function renderMarkdown(md) {
+        if (typeof marked !== "undefined" && marked.parse) {
+          return marked.parse(md, { breaks: true });
+        }
+        return "<p>" + escapeHtml(md).replace(/\n/g, "<br/>") + "</p>";
+      }
+
+      function copyToClipboard(text, btn) {
+        function done(ok) {
+          if (!btn) return;
+          btn.classList.add("copied");
+          var o = btn.textContent;
+          btn.textContent = ok ? "已复制" : "失败";
+          setTimeout(function () {
+            btn.classList.remove("copied");
+            btn.textContent = o;
+          }, 1600);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+        } else {
+          try {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            done(true);
+          } catch (e) {
+            done(false);
+          }
+        }
+      }
+
+      /** 从 answer 中解析 [关键命令]: 与 [离线状态]: 之间的纯文本 */
+      function extractCommandsBlock(answer) {
+        if (!answer) return "";
+        var m = answer.match(/\[\s*关键命令\s*\]\s*:\s*([\s\S]*?)(?=\n\s*\[\s*离线状态\s*\]\s*:|$)/i);
+        return m ? m[1].trim() : "";
+      }
+
+      function attachCodeCopyButtons(root) {
+        root.querySelectorAll("pre").forEach(function (pre) {
+          if (pre.querySelector(".code-toolbar")) return;
+          var code = pre.querySelector("code");
+          var txt = code ? code.innerText : pre.innerText;
+          var bar = document.createElement("div");
+          bar.className = "code-toolbar";
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn-copy";
+          b.textContent = "Copy Command";
+          b.addEventListener("click", function () { copyToClipboard(txt, b); });
+          bar.appendChild(b);
+          pre.appendChild(bar);
+        });
+      }
+
+      function appendCommandCopyAllRow(container, answer) {
+        var block = extractCommandsBlock(answer);
+        if (!block || block === "-") return;
+        var row = document.createElement("div");
+        row.className = "cmd-copy-row";
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "btn-copy";
+        b.textContent = "一键复制命令";
+        b.addEventListener("click", function () { copyToClipboard(block, b); });
+        row.appendChild(b);
+        container.appendChild(row);
+      }
+
+      function formatSourceLine(data) {
+        var links = data.sop_links || [];
+        if (links.length) {
+          return links.map(function (L) {
+            var h = L.href || "#";
+            var lab = L.label || L.href || "";
+            return '<a href="' + escapeHtml(h) + '" target="_blank" rel="noopener">' + escapeHtml(lab) + "</a>";
+          }).join(" · ");
+        }
+        var a = data.answer || "";
+        if (a.match(/sop-\d{3}\.html/i)) {
+          return linkifySopFiles(a.replace(/<[^>]+>/g, ""));
+        }
+        return "";
+      }
+
+      function appendUserBubble(text) {
+        var wrap = document.createElement("div");
+        wrap.className = "msg user";
+        var b = document.createElement("div");
+        b.className = "bubble bubble-inner";
+        b.textContent = text;
+        wrap.appendChild(b);
+        chat.appendChild(wrap);
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function removeLoadingPlaceholder() {
+        var el = document.getElementById("inflight-loading");
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      }
+
+      var loadingTimer = null;
+      var loadingIdx = 0;
+
+      function startLoadingCycle() {
+        loadingIdx = 0;
+        var span = document.getElementById("loading-status");
+        function tick() {
+          if (!span) return;
+          span.textContent = LOADING_STATUSES[loadingIdx % LOADING_STATUSES.length];
+          loadingIdx += 1;
+        }
+        tick();
+        loadingTimer = setInterval(tick, 1400);
+      }
+
+      function stopLoadingCycle() {
+        if (loadingTimer) {
+          clearInterval(loadingTimer);
+          loadingTimer = null;
+        }
+        removeLoadingPlaceholder();
+      }
+
+      function appendLoadingPlaceholder() {
+        removeLoadingPlaceholder();
+        var wrap = document.createElement("div");
+        wrap.className = "msg assistant loading-msg";
+        wrap.id = "inflight-loading";
+        wrap.innerHTML =
+          '<div class="loading-bar"><span class="pulse"></span><span id="loading-status">' +
+          escapeHtml(LOADING_STATUSES[0]) +
+          "</span></div>";
+        chat.appendChild(wrap);
+        chat.scrollTop = chat.scrollHeight;
+        startLoadingCycle();
+      }
+
+      function appendAssistantBubble(data) {
+        var wrap = document.createElement("div");
+        wrap.className = "msg assistant";
+        var outer = document.createElement("div");
+        var fallback = isFallbackMode(data);
+        outer.className = "bubble " + (fallback ? "bubble-fallback" : "bubble-ai");
+
+        var tag = document.createElement("div");
+        tag.className = "role-tag " + (fallback ? "offline" : "gemini");
+        tag.textContent = fallback
+          ? "⚠️ 离线专家引擎已接管 (API Rate Limited)。"
+          : "GEMINI 2.5 FLASH";
+        outer.appendChild(tag);
+
+        var inner = document.createElement("div");
+        inner.className = "bubble-inner";
+
+        var steps = data.steps || [];
+        steps.forEach(function (s) {
+          var sb = document.createElement("div");
+          sb.className = "step-box";
+          sb.textContent = s;
+          inner.appendChild(sb);
+        });
+
+        var content = document.createElement("div");
+        content.className = "md";
+        content.innerHTML = renderMarkdown(data.answer || "");
+        inner.appendChild(content);
+
+        attachCodeCopyButtons(inner);
+        appendCommandCopyAllRow(inner, data.answer || "");
+
+        var src = formatSourceLine(data);
+        if (src) {
+          var sl = document.createElement("div");
+          sl.className = "source-line";
+          sl.innerHTML = "来源文档: " + src;
+          inner.appendChild(sl);
+        }
+
+        outer.appendChild(inner);
+        wrap.appendChild(outer);
+        chat.appendChild(wrap);
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function setFormLoading(on) {
+        qEl.disabled = on;
+        sendBtn.disabled = on;
+        sendBtn.textContent = on ? "推理中…" : "发送";
+        if (on) {
+          appendLoadingPlaceholder();
+        } else {
+          stopLoadingCycle();
+        }
+      }
+
+      async function send() {
+        var text = (qEl.value || "").trim();
+        if (!text) return;
+
+        appendUserBubble(text);
+        qEl.value = "";
+
+        var payload = {
+          question: text,
+          history: history.map(function (h) { return { role: h.role, content: h.content }; }),
+        };
+
+        history.push({ role: "user", content: text });
+        setFormLoading(true);
+        quotaBar.classList.remove("show");
+
+        try {
+          var res = await fetch("/v3/agent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (res.status === 429) {
+            showQuotaBanner();
+          }
+
+          var data;
+          try {
+            data = await res.json();
+          } catch (e) {
+            data = { answer: "响应不是合法 JSON：" + res.status, mode: "fallback", steps: [], sop_links: [], error: "parse", quota_exceeded: false };
+          }
+
+          if (data && data.quota_exceeded) {
+            showQuotaBanner();
+          }
+
+          if (!res.ok && res.status !== 429) {
+            data = data || {};
+            var det = data.detail;
+            var detStr = "";
+            if (typeof det === "string") detStr = det;
+            else if (Array.isArray(det)) {
+              detStr = det.map(function (x) { return x.msg || JSON.stringify(x); }).join("; ");
+            } else if (det) detStr = JSON.stringify(det);
+            data.answer = detStr || ("请求失败 HTTP " + res.status);
+            data.mode = "fallback";
+            data.steps = data.steps || [];
+            data.sop_links = data.sop_links || [];
+            data.error = data.error || "http";
+          }
+
+          appendAssistantBubble(data);
+          history.push({ role: "assistant", content: data.answer || "" });
+        } catch (err) {
+          appendAssistantBubble({
+            answer: "网络错误：" + (err && err.message ? err.message : String(err)),
+            mode: "fallback",
+            steps: [],
+            sop_links: [],
+            error: "network",
+            quota_exceeded: false,
+          });
+          history.push({ role: "assistant", content: "（请求失败）" });
+        } finally {
+          setFormLoading(false);
+        }
+      }
+
+      sendBtn.addEventListener("click", send);
+      qEl.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          if (!sendBtn.disabled) send();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
